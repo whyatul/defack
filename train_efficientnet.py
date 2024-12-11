@@ -18,20 +18,66 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class DeepfakeEfficientNet(nn.Module):
-    def __init__(self, version='b0'):
+    def __init__(self):
         super().__init__()
-        self.backbone = EfficientNet.from_pretrained(f'efficientnet-{version}')
+        # Load pretrained model (changed from b0 to b3)
+        self.backbone = EfficientNet.from_pretrained(
+            'efficientnet-b3'
+        )
+        
+        # Get the number of features from the backbone
         in_features = self.backbone._fc.in_features
+        
+        # Replace classifier with custom head
         self.backbone._fc = nn.Sequential(
-            nn.Dropout(0.5),
-            nn.Linear(in_features, 512),
-            nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.BatchNorm1d(in_features),  # Added normalization
+            nn.Dropout(p=0.5),
+            nn.Linear(in_features, 1024),  # Increased from 512 to 1024 for B3
+            nn.BatchNorm1d(1024),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=0.4),
+            nn.Linear(1024, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=0.3),
             nn.Linear(512, 1)
         )
+        
+        # Initialize the new layers
+        self._init_weights()
+    
+    def _init_weights(self):
+        for m in self.backbone._fc.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
     
     def forward(self, x):
         return self.backbone(x)
+    
+    def get_optimizer(self):
+        # Different learning rates for backbone and classifier
+        backbone_params = []
+        classifier_params = []
+        
+        # Separate backbone and classifier parameters
+        for name, param in self.named_parameters():
+            if '_fc' in name:
+                classifier_params.append(param)
+            else:
+                backbone_params.append(param)
+        
+        # Create optimizer with different learning rates
+        optimizer = torch.optim.Adam([
+            {'params': backbone_params, 'lr': 1e-5},  # Slightly lower LR for B3
+            {'params': classifier_params, 'lr': 5e-5}  # Adjusted LR for larger model
+        ], weight_decay=1e-5)
+        
+        return optimizer
 
 class DeepfakeTrainer:
     def __init__(self, model, train_loader, val_loader, test_loader, device):
@@ -172,9 +218,9 @@ def main():
     
     # Configuration
     DATA_DIR = '/kaggle/input/3body-filtered-v2-10k'  # Adjust as needed
-    IMAGE_SIZE = 224
-    BATCH_SIZE = 32
-    NUM_EPOCHS = 2 #Change in future for main run
+    IMAGE_SIZE = 300  # EfficientNet-B3 optimal size
+    BATCH_SIZE = 48  # Reduced batch size for larger model
+    NUM_EPOCHS = 30
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # Get data
@@ -185,12 +231,14 @@ def main():
     with mlflow.start_run():
         # Log parameters
         mlflow.log_params({
-            'model_type': 'efficientnet-b0',
+            'model_type': 'efficientnet-b3',
             'image_size': IMAGE_SIZE,
             'batch_size': BATCH_SIZE,
             'num_epochs': NUM_EPOCHS,
             'optimizer': 'Adam',
-            'learning_rate': 1e-4
+            'backbone_lr': 1e-5,
+            'classifier_lr': 5e-5,
+            'weight_decay': 1e-5
         })
         
         # Create and train model
