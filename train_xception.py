@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import mlflow
 import mlflow.pytorch
-import pretrainedmodels
+import timm
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import confusion_matrix, roc_curve, auc
@@ -19,14 +19,19 @@ logger = logging.getLogger(__name__)
 class DeepfakeXception(nn.Module):
     def __init__(self):
         super().__init__()
-        # Load pretrained Xception
-        self.backbone = pretrainedmodels.__dict__['xception'](num_classes=1000, pretrained='imagenet')
+        # Load pretrained Xception using timm
+        self.backbone = timm.create_model(
+            'xception',
+            pretrained=True,
+            num_classes=0,
+            global_pool='avg'
+        )
         
-        # Get the number of features from the backbone
-        in_features = self.backbone.last_linear.in_features
-        
-        # Replace the last linear layer
-        self.backbone.last_linear = nn.Identity()
+        # Get the number of features
+        with torch.no_grad():
+            dummy_input = torch.zeros(1, 3, 299, 299)
+            features = self.backbone(dummy_input)
+            in_features = features.shape[1]
         
         # Create custom classification head
         self.classifier = nn.Sequential(
