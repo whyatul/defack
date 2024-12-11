@@ -270,10 +270,10 @@ def main():
     mlflow.set_experiment('deepfake_two_stream')
     
     # Configuration
-    DATA_DIR = '/kaggle/input/deepfake-detection-dataset'  # Adjust as needed
+    DATA_DIR = '/kaggle/input/3body-filtered-v2-10k'  # Adjust as needed
     IMAGE_SIZE = 224
     BATCH_SIZE = 32
-    NUM_EPOCHS = 30
+    NUM_EPOCHS = 2 #Change in future for main run
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # Get data
