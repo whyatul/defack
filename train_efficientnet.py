@@ -219,7 +219,7 @@ def main():
     # Configuration
     DATA_DIR = '/kaggle/input/3body-filtered-v2-10k'  # Adjust as needed
     IMAGE_SIZE = 300  # EfficientNet-B3 optimal size
-    BATCH_SIZE = 48  # Reduced batch size for larger model
+    BATCH_SIZE = 32  # Reduced batch size for larger model
     NUM_EPOCHS = 30
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
