@@ -9,6 +9,9 @@ import glob
 import logging
 import sys
 import warnings
+import mediapipe as mp
+import numpy as np
+import cv2
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -18,6 +21,10 @@ logger = logging.getLogger(__name__)
 warnings.filterwarnings('ignore', category=UserWarning, module='timm')
 warnings.filterwarnings('ignore', category=UserWarning, module='huggingface_hub')
 warnings.filterwarnings('ignore', category=FutureWarning, module='torch.serialization')
+
+# Initialize MediaPipe Face Detection
+mp_face_detection = mp.solutions.face_detection
+mp_drawing = mp.solutions.drawing_utils
 
 # Set page config
 st.set_page_config(
@@ -54,6 +61,53 @@ MODEL_IMAGE_SIZES = {
     "two_stream": 224,
     "cnn_transformer": 224
 }
+
+def extract_face(image, padding=0.05):
+    """Extract face from image using MediaPipe with padding"""
+    # Convert PIL Image to cv2 format
+    img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    height, width = img_cv.shape[:2]
+    
+    with mp_face_detection.FaceDetection(min_detection_confidence=0.5) as face_detection:
+        # Convert the BGR image to RGB
+        results = face_detection.process(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
+        
+        if not results.detections:
+            return None, None
+        
+        # Get the first face detection
+        detection = results.detections[0]
+        bbox = detection.location_data.relative_bounding_box
+        
+        # Calculate padding
+        pad_w = int(bbox.width * width * padding)
+        pad_h = int(bbox.height * height * padding)
+        
+        # Convert relative coordinates to absolute with padding
+        x = int(bbox.xmin * width) - pad_w
+        y = int(bbox.ymin * height) - pad_h
+        w = int(bbox.width * width) + (2 * pad_w)
+        h = int(bbox.height * height) + (2 * pad_h)
+        
+        # Ensure coordinates are within image bounds
+        x = max(0, x)
+        y = max(0, y)
+        w = min(w, width - x)
+        h = min(h, height - y)
+        
+        # Extract face region with padding
+        face_region = img_cv[y:y+h, x:x+w]
+        
+        # Convert back to RGB for PIL
+        face_region_rgb = cv2.cvtColor(face_region, cv2.COLOR_BGR2RGB)
+        face_pil = Image.fromarray(face_region_rgb)
+        
+        # Create visualization
+        img_cv_viz = img_cv.copy()
+        cv2.rectangle(img_cv_viz, (x, y), (x+w, y+h), (0, 255, 0), 2)
+        img_viz = cv2.cvtColor(img_cv_viz, cv2.COLOR_BGR2RGB)
+        
+        return face_pil, Image.fromarray(img_viz)
 
 def resize_image_for_display(image, max_size=400):
     """Resize image for display while maintaining aspect ratio"""
@@ -160,14 +214,27 @@ def main():
         try:
             # Load and display the image
             image = Image.open(uploaded_file).convert('RGB')
-            display_image = resize_image_for_display(image)
+            
+            # Extract face
+            face_image, viz_image = extract_face(image)
+            
+            if face_image is None:
+                st.error("No face detected in the image. Please upload an image containing a clear face.")
+                return
             
             # Create two columns for image and info
             col1, col2 = st.columns([1, 2])
             
             with col1:
-                st.image(display_image, caption="Uploaded Image", use_container_width=True)
-                st.write(f"Original size: {image.size[0]}x{image.size[1]}")
+                # Display original image with face detection
+                st.write("### Original Image with Face Detection")
+                st.image(viz_image, use_container_width=True)
+                
+                # Display extracted face
+                st.write("### Extracted Face")
+                display_face = resize_image_for_display(face_image)
+                st.image(display_face, use_container_width=True)
+                st.write(f"Face size: {face_image.size[0]}x{face_image.size[1]}")
             
             with col2:
                 # Load all converted models
@@ -202,7 +269,7 @@ def main():
                         models_loaded = True
                         
                         # Process image for this specific model
-                        processed_image = process_image(image, model_type)
+                        processed_image = process_image(face_image, model_type)
                         if processed_image is None:
                             st.error(f"Failed to process image for {model_type}")
                             continue
