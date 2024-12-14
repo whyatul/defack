@@ -12,6 +12,7 @@ import warnings
 import mediapipe as mp
 import numpy as np
 import cv2
+from feature_visualization import get_feature_maps, display_feature_maps
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -62,7 +63,7 @@ MODEL_IMAGE_SIZES = {
     "cnn_transformer": 224
 }
 
-def extract_face(image, padding=0.05):
+def extract_face(image, padding=0.1):
     """Extract face from image using MediaPipe with padding"""
     # Convert PIL Image to cv2 format
     img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
@@ -170,9 +171,9 @@ def load_model(model_path, model_type):
             logger.warning(f"Could not initialize model of type {model_type}")
             return None
         
-        # Load state dict
+        # Load state dict with weights_only=True to avoid pickle security warning
         try:
-            state_dict = torch.load(model_path, map_location='cpu')
+            state_dict = torch.load(model_path, map_location='cpu', weights_only=True)
             model.load_state_dict(state_dict, strict=False)
             logger.info(f"Successfully loaded state dict for {model_type}")
         except Exception as e:
@@ -251,51 +252,89 @@ def main():
                 
                 st.write(f"### Model Predictions")
                 
-                # Create columns for results
-                cols = st.columns(2)
-                col_idx = 0
-                models_loaded = False
+                # Create tabs for predictions and visualizations
+                pred_tab, viz_tab = st.tabs(["Predictions", "Feature Visualizations"])
                 
-                progress_bar = st.progress(0)
-                for i, model_path in enumerate(model_files):
-                    # Get model type from filename
-                    model_type = os.path.basename(model_path).replace("_converted.pth", "")
+                with pred_tab:
+                    # Create columns for results
+                    cols = st.columns(2)
+                    col_idx = 0
+                    models_loaded = False
                     
-                    with st.spinner(f'Processing with {model_type.upper()}...'):
-                        model = load_model(model_path, model_type)
-                        if model is None:
-                            continue
+                    progress_bar = st.progress(0)
+                    predictions_data = []  # Store predictions for later use
+                    
+                    for i, model_path in enumerate(model_files):
+                        # Get model type from filename
+                        model_type = os.path.basename(model_path).replace("_converted.pth", "")
                         
-                        models_loaded = True
-                        
-                        # Process image for this specific model
-                        processed_image = process_image(face_image, model_type)
-                        if processed_image is None:
-                            st.error(f"Failed to process image for {model_type}")
-                            continue
-                        
-                        # Make prediction
-                        try:
-                            with torch.no_grad():
-                                output = model(processed_image)
-                                probability = torch.sigmoid(output).item()
-                                prediction = "FAKE" if probability > 0.5 else "REAL"
-                                confidence = probability if prediction == "FAKE" else 1 - probability
+                        with st.spinner(f'Processing with {model_type.upper()}...'):
+                            model = load_model(model_path, model_type)
+                            if model is None:
+                                continue
                             
-                            # Display results in card format
-                            with cols[col_idx % 2]:
-                                st.markdown(f"""
-                                <div style='padding: 15px; border-radius: 10px; border: 1px solid #ddd; margin: 5px 0;'>
-                                    <h4>{model_type.upper()}</h4>
-                                    <p>Prediction: <strong>{prediction}</strong><br>
-                                    Confidence: {format_confidence(confidence)}</p>
-                                </div>
-                                """, unsafe_allow_html=True)
-                            col_idx += 1
-                        except Exception as e:
-                            st.error(f"Error making prediction with {model_type}: {str(e)}")
-                    
-                    progress_bar.progress((i + 1) / len(model_files))
+                            models_loaded = True
+                            
+                            # Process image for this specific model
+                            processed_image = process_image(face_image, model_type)
+                            if processed_image is None:
+                                st.error(f"Failed to process image for {model_type}")
+                                continue
+                            
+                            # Make prediction
+                            try:
+                                with torch.no_grad():
+                                    output = model(processed_image)
+                                    probability = torch.sigmoid(output).item()
+                                    prediction = "FAKE" if probability > 0.5 else "REAL"
+                                    confidence = probability if prediction == "FAKE" else 1 - probability
+                                
+                                # Store prediction data
+                                predictions_data.append({
+                                    'model_type': model_type,
+                                    'prediction': prediction,
+                                    'confidence': confidence,
+                                    'model': model,
+                                    'processed_image': processed_image
+                                })
+                                
+                                # Display results in card format
+                                with cols[col_idx % 2]:
+                                    st.markdown(f"""
+                                    <div style='padding: 15px; border-radius: 10px; border: 1px solid #ddd; margin: 5px 0;'>
+                                        <h4>{model_type.upper()}</h4>
+                                        <p>Prediction: <strong>{prediction}</strong><br>
+                                        Confidence: {format_confidence(confidence)}</p>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                col_idx += 1
+                                
+                            except Exception as e:
+                                st.error(f"Error making prediction with {model_type}: {str(e)}")
+                        
+                        progress_bar.progress((i + 1) / len(model_files))
+                
+                with viz_tab:
+                    if predictions_data:
+                        # Add model selector
+                        selected_model = st.selectbox(
+                            "Select Model for Visualization",
+                            options=[p['model_type'].upper() for p in predictions_data],
+                            format_func=lambda x: f"{x} Model"
+                        )
+                        
+                        # Get selected model data
+                        model_data = next(p for p in predictions_data if p['model_type'].upper() == selected_model)
+                        
+                        # Get and display feature maps
+                        visualizations = get_feature_maps(
+                            model_data['model'],
+                            model_data['model_type'],
+                            model_data['processed_image']
+                        )
+                        display_feature_maps(face_image, visualizations)
+                    else:
+                        st.warning("No models available for visualization.")
                 
                 if not models_loaded:
                     st.error("No models could be loaded! Please check the model files.")
