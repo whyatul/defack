@@ -13,6 +13,7 @@ import mediapipe as mp
 import numpy as np
 import cv2
 from feature_visualization import get_feature_maps, display_feature_maps
+from video_processor import VideoProcessor
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -198,204 +199,344 @@ def format_confidence(confidence):
 
 def main():
     st.title("🔍 Deepfake Detection System")
-    st.write("Upload an image to check if it's real or fake using multiple deep learning models.")
+    st.write("Upload an image or video to check if it's real or fake using multiple deep learning models.")
     
-    # File uploader
-    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+    # Input type selector
+    input_type = st.radio("Select input type:", ["Image", "Video"], horizontal=True)
     
-    if uploaded_file is not None:
-        try:
-            # Load and display the image
-            image = Image.open(uploaded_file).convert('RGB')
+    if input_type == "Image":
+        # Image processing
+        uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+        
+        if uploaded_file is not None:
+            process_image_input(uploaded_file)
+    else:
+        # Video processing
+        uploaded_file = st.file_uploader("Choose a video...", type=["mp4", "avi", "mov"])
+        
+        if uploaded_file is not None:
+            process_video_input(uploaded_file)
+
+def process_video_input(video_file):
+    try:
+        # Get number of frames from user with a start button
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            num_frames = st.slider("Number of frames to analyze", min_value=10, max_value=300, value=100, step=10,
+                                help="More frames = more accurate but slower processing")
+        with col2:
+            start_button = st.button("Start Processing", type="primary")
+        
+        if not start_button:
+            return
+        
+        # Initialize video processor
+        video_processor = VideoProcessor(num_frames=num_frames)
+        
+        # Save uploaded video
+        video_path = video_processor.save_uploaded_video(video_file)
+        
+        # Load models
+        converted_dir = "converted_models"
+        if not os.path.exists(converted_dir):
+            st.error("Please run convert_models.py first to convert the models!")
+            return
+        
+        model_files = glob.glob(os.path.join(converted_dir, "*_converted.pth"))
+        if not model_files:
+            st.error("No converted models found! Please run convert_models.py first.")
+            return
+        
+        # Load all models
+        models_data = []
+        for model_path in model_files:
+            model_type = os.path.basename(model_path).replace("_converted.pth", "")
+            model = load_model(model_path, model_type)
+            if model is not None:
+                models_data.append({
+                    'model': model,
+                    'model_type': model_type,
+                    'image_size': MODEL_IMAGE_SIZES[model_type]
+                })
+        
+        if not models_data:
+            st.error("No models could be loaded! Please check the model files.")
+            return
+        
+        # Create progress bars
+        st.write("### Processing Video")
+        progress_extract = st.progress(0)
+        status_extract = st.empty()
+        progress_faces = st.progress(0)
+        status_faces = st.empty()
+        progress_process = st.progress(0)
+        status_process = st.empty()
+        
+        def update_progress(progress_bar, status_placeholder, stage):
+            def callback(progress):
+                progress_bar.progress(progress)
+                status_placeholder.text(f"{stage}: {progress:.1%}")
+            return callback
+        
+        # Process video with progress tracking
+        progress_callbacks = {
+            'extract_frames': update_progress(progress_extract, status_extract, "Extracting frames"),
+            'extract_faces': update_progress(progress_faces, status_faces, "Detecting faces"),
+            'process_frames': update_progress(progress_process, status_process, "Processing frames")
+        }
+        
+        results, frame_results, faces = video_processor.process_video(
+            video_path,
+            extract_face_fn=extract_face,
+            process_image_fn=process_image,
+            models=models_data,
+            progress_callbacks=progress_callbacks
+        )
+        
+        # Clear progress bars and status messages
+        progress_extract.empty()
+        status_extract.empty()
+        progress_faces.empty()
+        status_faces.empty()
+        progress_process.empty()
+        status_process.empty()
+        
+        if results:
+            # Create tabs for different views
+            pred_tab, faces_tab = st.tabs(["Predictions", "Detected Faces"])
             
-            # Extract face
-            face_image, viz_image = extract_face(image)
+            with pred_tab:
+                st.write("### Model Predictions")
+                cols = st.columns(2)
+                col_idx = 0
+                
+                for result in results:
+                    with cols[col_idx % 2]:
+                        st.markdown(f"""
+                        <div style='padding: 15px; border-radius: 10px; border: 1px solid #ddd; margin: 5px 0;'>
+                            <h4>{result['model_type'].upper()}</h4>
+                            <p>Overall Prediction: <strong>{result['prediction']}</strong><br>
+                            Average Confidence: {format_confidence(result['confidence'])}<br>
+                            Fake Frames: {result['fake_frame_ratio']:.1%}</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    col_idx += 1
             
-            if face_image is None:
-                st.error("No face detected in the image. Please upload an image containing a clear face.")
+            with faces_tab:
+                st.write("### Sample Detected Faces")
+                # Display a subset of detected faces in a grid
+                n_sample_faces = min(12, len(faces))  # Show up to 12 faces
+                sample_indices = np.linspace(0, len(faces)-1, n_sample_faces, dtype=int)
+                
+                # Create grid layout for faces
+                cols = st.columns(4)  # 4 faces per row
+                for idx, face_idx in enumerate(sample_indices):
+                    with cols[idx % 4]:
+                        face = faces[face_idx]
+                        st.image(face, caption=f"Frame {face_idx}", use_container_width=True)
+        else:
+            st.warning("No faces could be detected in the video frames.")
+        
+        # Cleanup
+        os.unlink(video_path)
+        
+    except Exception as e:
+        st.error(f"An error occurred: {str(e)}")
+        logger.error(f"Error processing video: {str(e)}")
+
+def process_image_input(uploaded_file):
+    try:
+        # Load and display the image
+        image = Image.open(uploaded_file).convert('RGB')
+        
+        # Extract face
+        face_image, viz_image = extract_face(image)
+        
+        if face_image is None:
+            st.error("No face detected in the image. Please upload an image containing a clear face.")
+            return
+        
+        # Create two columns for image and info
+        col1, col2 = st.columns([1, 2])
+        
+        with col1:
+            # Display original image with face detection
+            st.write("### Original Image with Face Detection")
+            st.image(viz_image, use_container_width=True)
+            
+            # Display extracted face
+            st.write("### Extracted Face")
+            display_face = resize_image_for_display(face_image)
+            st.image(display_face, use_container_width=True)
+            st.write(f"Face size: {face_image.size[0]}x{face_image.size[1]}")
+        
+        with col2:
+            # Load all converted models
+            converted_dir = "converted_models"
+            if not os.path.exists(converted_dir):
+                st.error("Please run convert_models.py first to convert the models!")
                 return
             
-            # Create two columns for image and info
-            col1, col2 = st.columns([1, 2])
+            # Find all converted model files
+            model_files = glob.glob(os.path.join(converted_dir, "*_converted.pth"))
+            if not model_files:
+                st.error("No converted models found! Please run convert_models.py first.")
+                return
             
-            with col1:
-                # Display original image with face detection
-                st.write("### Original Image with Face Detection")
-                st.image(viz_image, use_container_width=True)
-                
-                # Display extracted face
-                st.write("### Extracted Face")
-                display_face = resize_image_for_display(face_image)
-                st.image(display_face, use_container_width=True)
-                st.write(f"Face size: {face_image.size[0]}x{face_image.size[1]}")
+            st.write("### Model Predictions")
             
-            with col2:
-                # Load all converted models
-                converted_dir = "converted_models"
-                if not os.path.exists(converted_dir):
-                    st.error("Please run convert_models.py first to convert the models!")
-                    return
+            # Create tabs for predictions and visualizations
+            pred_tab, viz_tab = st.tabs(["Predictions", "Feature Visualizations"])
+            
+            with pred_tab:
+                # Create columns for results
+                cols = st.columns(2)
+                col_idx = 0
+                models_loaded = False
                 
-                # Find all converted model files
-                model_files = glob.glob(os.path.join(converted_dir, "*_converted.pth"))
-                if not model_files:
-                    st.error("No converted models found! Please run convert_models.py first.")
-                    return
+                progress_bar = st.progress(0)
+                predictions_data = []  # Store predictions for later use
                 
-                st.write(f"### Model Predictions")
-                
-                # Create tabs for predictions and visualizations
-                pred_tab, viz_tab = st.tabs(["Predictions", "Feature Visualizations"])
-                
-                with pred_tab:
-                    # Create columns for results
-                    cols = st.columns(2)
-                    col_idx = 0
-                    models_loaded = False
+                for i, model_path in enumerate(model_files):
+                    # Get model type from filename
+                    model_type = os.path.basename(model_path).replace("_converted.pth", "")
                     
-                    progress_bar = st.progress(0)
-                    predictions_data = []  # Store predictions for later use
+                    with st.spinner(f'Processing with {model_type.upper()}...'):
+                        model = load_model(model_path, model_type)
+                        if model is None:
+                            continue
+                        
+                        models_loaded = True
+                        
+                        # Process image for this specific model
+                        processed_image = process_image(face_image, model_type)
+                        if processed_image is None:
+                            st.error(f"Failed to process image for {model_type}")
+                            continue
+                        
+                        # Make prediction
+                        try:
+                            with torch.no_grad():
+                                output = model(processed_image)
+                                probability = torch.sigmoid(output).item()
+                                prediction = "FAKE" if probability > 0.5 else "REAL"
+                                confidence = probability if prediction == "FAKE" else 1 - probability
+                            
+                            # Store prediction data
+                            predictions_data.append({
+                                'model_type': model_type,
+                                'prediction': prediction,
+                                'confidence': confidence,
+                                'model': model,
+                                'processed_image': processed_image
+                            })
+                            
+                            # Display results in card format
+                            with cols[col_idx % 2]:
+                                st.markdown(f"""
+                                <div style='padding: 15px; border-radius: 10px; border: 1px solid #ddd; margin: 5px 0;'>
+                                    <h4>{model_type.upper()}</h4>
+                                    <p>Prediction: <strong>{prediction}</strong><br>
+                                    Confidence: {format_confidence(confidence)}</p>
+                                </div>
+                                """, unsafe_allow_html=True)
+                            col_idx += 1
+                            
+                        except Exception as e:
+                            st.error(f"Error making prediction with {model_type}: {str(e)}")
                     
-                    for i, model_path in enumerate(model_files):
-                        # Get model type from filename
-                        model_type = os.path.basename(model_path).replace("_converted.pth", "")
+                    progress_bar.progress((i + 1) / len(model_files))
+            
+            with viz_tab:
+                if predictions_data:
+                    # Filter for CNN models only
+                    cnn_predictions = [p for p in predictions_data 
+                                    if p['model_type'].lower() in ['xception', 'efficientnet']]
+                    
+                    if cnn_predictions:
+                        # Add model selector for CNN models only
+                        selected_model = st.selectbox(
+                            "Select CNN Model for Feature Visualization",
+                            options=[p['model_type'].upper() for p in cnn_predictions],
+                            format_func=lambda x: f"{x} Model"
+                        )
                         
-                        with st.spinner(f'Processing with {model_type.upper()}...'):
-                            model = load_model(model_path, model_type)
-                            if model is None:
-                                continue
-                            
-                            models_loaded = True
-                            
-                            # Process image for this specific model
-                            processed_image = process_image(face_image, model_type)
-                            if processed_image is None:
-                                st.error(f"Failed to process image for {model_type}")
-                                continue
-                            
-                            # Make prediction
-                            try:
-                                with torch.no_grad():
-                                    output = model(processed_image)
-                                    probability = torch.sigmoid(output).item()
-                                    prediction = "FAKE" if probability > 0.5 else "REAL"
-                                    confidence = probability if prediction == "FAKE" else 1 - probability
-                                
-                                # Store prediction data
-                                predictions_data.append({
-                                    'model_type': model_type,
-                                    'prediction': prediction,
-                                    'confidence': confidence,
-                                    'model': model,
-                                    'processed_image': processed_image
-                                })
-                                
-                                # Display results in card format
-                                with cols[col_idx % 2]:
-                                    st.markdown(f"""
-                                    <div style='padding: 15px; border-radius: 10px; border: 1px solid #ddd; margin: 5px 0;'>
-                                        <h4>{model_type.upper()}</h4>
-                                        <p>Prediction: <strong>{prediction}</strong><br>
-                                        Confidence: {format_confidence(confidence)}</p>
-                                    </div>
-                                    """, unsafe_allow_html=True)
-                                col_idx += 1
-                                
-                            except Exception as e:
-                                st.error(f"Error making prediction with {model_type}: {str(e)}")
+                        # Get selected model data
+                        model_data = next(p for p in cnn_predictions if p['model_type'].upper() == selected_model)
                         
-                        progress_bar.progress((i + 1) / len(model_files))
-                
-                with viz_tab:
-                    if predictions_data:
-                        # Filter for CNN models only
-                        cnn_predictions = [p for p in predictions_data 
-                                        if p['model_type'].lower() in ['xception', 'efficientnet']]
+                        st.write("### Feature Map Visualization")
                         
-                        if cnn_predictions:
-                            # Add model selector for CNN models only
-                            selected_model = st.selectbox(
-                                "Select CNN Model for Feature Visualization",
-                                options=[p['model_type'].upper() for p in cnn_predictions],
-                                format_func=lambda x: f"{x} Model"
-                            )
-                            
-                            # Get selected model data
-                            model_data = next(p for p in cnn_predictions if p['model_type'].upper() == selected_model)
-                            
-                            st.write("### Feature Map Visualization")
-                            
-                            # Add model-specific descriptions
+                        # Add model-specific descriptions
+                        if model_data['model_type'].lower() == 'xception':
+                            st.write("""
+                            The Xception architecture processes features through three flows:
+                            Entry Flow → Middle Flow → Exit Flow
+                            """)
+                        else:  # EfficientNet
+                            st.write("""
+                            The EfficientNet architecture processes features through multiple stages:
+                            Initial → Stage 1-2 → Stage 3-4 → Stage 5-6 → Final
+                            """)
+                        
+                        # Get feature maps
+                        visualizations = get_feature_maps(
+                            model_data['model'],
+                            model_data['model_type'],
+                            model_data['processed_image']
+                        )
+                        
+                        if visualizations:
+                            # Sort visualizations by architectural order
                             if model_data['model_type'].lower() == 'xception':
-                                st.write("""
-                                The Xception architecture processes features through three flows:
-                                Entry Flow → Middle Flow → Exit Flow
-                                """)
-                            else:  # EfficientNet
-                                st.write("""
-                                The EfficientNet architecture processes features through multiple stages:
-                                Initial → Stage 1-2 → Stage 3-4 → Stage 5-6 → Final
-                                """)
-                            
-                            # Get feature maps
-                            visualizations = get_feature_maps(
-                                model_data['model'],
-                                model_data['model_type'],
-                                model_data['processed_image']
-                            )
-                            
-                            if visualizations:
-                                # Sort visualizations by architectural order
-                                if model_data['model_type'].lower() == 'xception':
-                                    # Sort by flow order
-                                    sorted_maps = {}
-                                    for k, v in visualizations.items():
-                                        if 'entry_' in k:
-                                            sorted_maps[k.replace('entry_', '1_')] = v
-                                        elif 'middle_' in k:
-                                            sorted_maps[k.replace('middle_', '2_')] = v
-                                        elif 'exit_' in k:
-                                            sorted_maps[k.replace('exit_', '3_')] = v
-                                    
-                                    # Display all maps in order
-                                    display_feature_maps(face_image, dict(sorted(sorted_maps.items())))
+                                # Sort by flow order
+                                sorted_maps = {}
+                                for k, v in visualizations.items():
+                                    if 'entry_' in k:
+                                        sorted_maps[k.replace('entry_', '1_')] = v
+                                    elif 'middle_' in k:
+                                        sorted_maps[k.replace('middle_', '2_')] = v
+                                    elif 'exit_' in k:
+                                        sorted_maps[k.replace('exit_', '3_')] = v
                                 
-                                else:  # EfficientNet
-                                    # Sort by stage order
-                                    sorted_maps = {}
-                                    stage_order = {
-                                        'initial': '1',
-                                        'stage1': '2',
-                                        'stage2': '3',
-                                        'stage3': '4',
-                                        'stage4': '5',
-                                        'stage5': '6',
-                                        'stage6': '7',
-                                        'final': '8',
-                                        'conv_head': '9'
-                                    }
-                                    
-                                    for k, v in visualizations.items():
-                                        for stage, order in stage_order.items():
-                                            if stage in k:
-                                                sorted_maps[f"{order}_{k}"] = v
-                                                break
-                                    
-                                    # Display all maps in order
-                                    display_feature_maps(face_image, dict(sorted(sorted_maps.items())))
-                            else:
-                                st.info("No feature maps available for this model.")
+                                # Display all maps in order
+                                display_feature_maps(face_image, dict(sorted(sorted_maps.items())))
+                            
+                            else:  # EfficientNet
+                                # Sort by stage order
+                                sorted_maps = {}
+                                stage_order = {
+                                    'initial': '1',
+                                    'stage1': '2',
+                                    'stage2': '3',
+                                    'stage3': '4',
+                                    'stage4': '5',
+                                    'stage5': '6',
+                                    'stage6': '7',
+                                    'final': '8',
+                                    'conv_head': '9'
+                                }
+                                
+                                for k, v in visualizations.items():
+                                    for stage, order in stage_order.items():
+                                        if stage in k:
+                                            sorted_maps[f"{order}_{k}"] = v
+                                            break
+                                
+                                # Display all maps in order
+                                display_feature_maps(face_image, dict(sorted(sorted_maps.items())))
                         else:
-                            st.info("Please select a CNN model (Xception or EfficientNet) for feature visualization.")
+                            st.info("No feature maps available for this model.")
                     else:
-                        st.warning("No models available for visualization.")
-                
-                if not models_loaded:
-                    st.error("No models could be loaded! Please check the model files.")
+                        st.info("Please select a CNN model (Xception or EfficientNet) for feature visualization.")
+                else:
+                    st.warning("No models available for visualization.")
             
-        except Exception as e:
-            st.error(f"An error occurred: {str(e)}")
-            logger.error(f"Error in main app: {str(e)}")
+            if not models_loaded:
+                st.error("No models could be loaded! Please check the model files.")
+    
+    except Exception as e:
+        st.error(f"An error occurred: {str(e)}")
+        logger.error(f"Error in process_image_input: {str(e)}")
 
 if __name__ == "__main__":
     main()
