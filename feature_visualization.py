@@ -9,7 +9,6 @@ from train_xception import DeepfakeXception
 from train_efficientnet import DeepfakeEfficientNet
 from train_swin import DeepfakeSwin
 from train_cross_attention import DeepfakeCrossAttention
-from train_two_stream import DeepfakeTwoStream
 from train_cnn_transformer import DeepfakeCNNTransformer
 
 class FeatureExtractor:
@@ -240,12 +239,6 @@ def get_feature_maps(model, model_type, image_tensor):
         for layer_name, feature in features.items():
             attn_map = visualizer.visualize_attention(feature)
             visualizations[f"Cross Attention {layer_name}"] = attn_map
-            
-    elif model_type == "two_stream":
-        for layer_name, feature in features.items():
-            feature_map = visualizer.normalize_feature_map(feature)
-            heatmap = visualizer.create_heatmap(feature_map)
-            visualizations[f"Two Stream {layer_name}"] = heatmap
             
     elif model_type == "cnn_transformer":
         for layer_name, feature in features.items():

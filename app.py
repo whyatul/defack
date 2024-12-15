@@ -60,7 +60,6 @@ MODEL_IMAGE_SIZES = {
     "efficientnet": 300,
     "swin": 224,
     "cross_attention": 224,
-    "two_stream": 224,
     "cnn_transformer": 224
 }
 
@@ -158,9 +157,6 @@ def load_model(model_path, model_type):
             elif model_type == "cross_attention":
                 from train_cross_attention import DeepfakeCrossAttention
                 model = DeepfakeCrossAttention()
-            elif model_type == "two_stream":
-                from train_two_stream import DeepfakeTwoStream
-                model = DeepfakeTwoStream()
             elif model_type == "cnn_transformer":
                 from train_cnn_transformer import DeepfakeCNNTransformer
                 model = DeepfakeCNNTransformer()
