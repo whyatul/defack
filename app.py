@@ -38,18 +38,45 @@ st.set_page_config(
 # Custom CSS for better styling
 st.markdown("""
     <style>
+        /* Control maximum size of all images */
         .stImage > img {
-            max-height: 400px;
-            width: auto;
+            max-height: 300px !important;
+            max-width: 100% !important;
+            width: auto !important;
+            object-fit: contain;
         }
+        
+        /* Specific control for face grid images */
+        .face-grid-image > img {
+            max-height: 200px !important;
+            max-width: 100% !important;
+            width: auto !important;
+            object-fit: contain;
+        }
+        
+        /* Feature map images */
+        .feature-map-image > img {
+            max-height: 150px !important;
+            max-width: 100% !important;
+            width: auto !important;
+            object-fit: contain;
+        }
+        
         div.stMarkdown {
             max-width: 100%;
         }
         div[data-testid="column"] {
-            background-color: #f8f9fa;
-            padding: 10px;
+            background-color: #1e1e1e;
+            padding: 15px;
             border-radius: 10px;
             margin: 5px;
+            border: 1px solid #333;
+        }
+        div[data-testid="column"] h4 {
+            color: #ffffff;
+        }
+        div[data-testid="column"] p {
+            color: #e0e0e0;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -69,48 +96,62 @@ def extract_face(image, padding=0.1):
     img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     height, width = img_cv.shape[:2]
     
-    with mp_face_detection.FaceDetection(min_detection_confidence=0.5) as face_detection:
+    with mp_face_detection.FaceDetection(
+        min_detection_confidence=0.5,
+        model_selection=1  # Use full range model for better detection
+    ) as face_detection:
         # Convert the BGR image to RGB
         results = face_detection.process(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
         
         if not results.detections:
-            return None, None
+            # Try with a lower confidence threshold for video frames
+            with mp_face_detection.FaceDetection(
+                min_detection_confidence=0.3,
+                model_selection=1
+            ) as face_detection_lower:
+                results = face_detection_lower.process(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
+                if not results.detections:
+                    return None, None
         
         # Get the first face detection
         detection = results.detections[0]
         bbox = detection.location_data.relative_bounding_box
         
-        # Calculate padding
-        pad_w = int(bbox.width * width * padding)
-        pad_h = int(bbox.height * height * padding)
+        # Calculate padding with bounds checking
+        pad_w = max(int(bbox.width * width * padding), 0)
+        pad_h = max(int(bbox.height * height * padding), 0)
         
         # Convert relative coordinates to absolute with padding
-        x = int(bbox.xmin * width) - pad_w
-        y = int(bbox.ymin * height) - pad_h
-        w = int(bbox.width * width) + (2 * pad_w)
-        h = int(bbox.height * height) + (2 * pad_h)
+        x = max(0, int(bbox.xmin * width) - pad_w)
+        y = max(0, int(bbox.ymin * height) - pad_h)
+        w = min(int(bbox.width * width) + (2 * pad_w), width - x)
+        h = min(int(bbox.height * height) + (2 * pad_h), height - y)
         
-        # Ensure coordinates are within image bounds
-        x = max(0, x)
-        y = max(0, y)
-        w = min(w, width - x)
-        h = min(h, height - y)
+        # Additional checks for valid dimensions
+        if w <= 0 or h <= 0 or x >= width or y >= height:
+            return None, None
         
         # Extract face region with padding
-        face_region = img_cv[y:y+h, x:x+w]
-        
-        # Convert back to RGB for PIL
-        face_region_rgb = cv2.cvtColor(face_region, cv2.COLOR_BGR2RGB)
-        face_pil = Image.fromarray(face_region_rgb)
-        
-        # Create visualization
-        img_cv_viz = img_cv.copy()
-        cv2.rectangle(img_cv_viz, (x, y), (x+w, y+h), (0, 255, 0), 2)
-        img_viz = cv2.cvtColor(img_cv_viz, cv2.COLOR_BGR2RGB)
-        
-        return face_pil, Image.fromarray(img_viz)
+        try:
+            face_region = img_cv[y:y+h, x:x+w]
+            if face_region.size == 0:  # Check if region is empty
+                return None, None
+                
+            # Convert back to RGB for PIL
+            face_region_rgb = cv2.cvtColor(face_region, cv2.COLOR_BGR2RGB)
+            face_pil = Image.fromarray(face_region_rgb)
+            
+            # Create visualization
+            img_cv_viz = img_cv.copy()
+            cv2.rectangle(img_cv_viz, (x, y), (x+w, y+h), (0, 255, 0), 2)
+            img_viz = cv2.cvtColor(img_cv_viz, cv2.COLOR_BGR2RGB)
+            
+            return face_pil, Image.fromarray(img_viz)
+        except Exception as e:
+            logger.error(f"Error in face extraction: {str(e)}")
+            return None, None
 
-def resize_image_for_display(image, max_size=400):
+def resize_image_for_display(image, max_size=300):
     """Resize image for display while maintaining aspect ratio"""
     width, height = image.size
     if width > height:
@@ -187,11 +228,18 @@ def load_model(model_path, model_type):
 
 def format_confidence(confidence):
     """Format confidence score with color based on value"""
-    if confidence >= 0.9:
-        color = "red" if confidence >= 0.95 else "orange"
+    if confidence >= 0.8:
+        color = "#00ffff"  # Bright cyan
+    elif confidence >= 0.6:
+        color = "#00bfff"  # Deep sky blue
     else:
-        color = "green" if confidence >= 0.7 else "blue"
+        color = "#87ceeb"  # Sky blue
     return f'<span style="color: {color}; font-weight: bold;">{confidence:.1%}</span>'
+
+def format_prediction(prediction):
+    """Format prediction with color (red for FAKE, green for REAL)"""
+    color = "#ff4444" if prediction == "FAKE" else "#00ff9d"  # Bright red for FAKE, Bright green for REAL
+    return f'<span style="color: {color}; font-weight: bold; font-size: 1.1em;">{prediction}</span>'
 
 def main():
     st.title("🔍 Deepfake Detection System")
@@ -226,11 +274,26 @@ def process_video_input(video_file):
         if not start_button:
             return
         
+        # Create progress bars
+        st.write("### Processing Video")
+        progress_load = st.progress(0)
+        status_load = st.empty()
+        progress_extract = st.progress(0)
+        status_extract = st.empty()
+        progress_faces = st.progress(0)
+        status_faces = st.empty()
+        progress_process = st.progress(0)
+        status_process = st.empty()
+        
         # Initialize video processor
         video_processor = VideoProcessor(num_frames=num_frames)
         
         # Save uploaded video
         video_path = video_processor.save_uploaded_video(video_file)
+        
+        # Load models with progress tracking
+        status_load.text("Loading models: Initializing...")
+        progress_load.progress(0.1)
         
         # Load models
         converted_dir = "converted_models"
@@ -243,10 +306,14 @@ def process_video_input(video_file):
             st.error("No converted models found! Please run convert_models.py first.")
             return
         
-        # Load all models
+        # Load all models with progress tracking
         models_data = []
-        for model_path in model_files:
+        total_models = len(model_files)
+        for i, model_path in enumerate(model_files):
             model_type = os.path.basename(model_path).replace("_converted.pth", "")
+            status_load.text(f"Loading models: {model_type.upper()}")
+            progress_load.progress((i + 1) / (total_models + 1))
+            
             model = load_model(model_path, model_type)
             if model is not None:
                 models_data.append({
@@ -255,18 +322,12 @@ def process_video_input(video_file):
                     'image_size': MODEL_IMAGE_SIZES[model_type]
                 })
         
+        progress_load.progress(1.0)
+        status_load.text("Models loaded successfully!")
+        
         if not models_data:
             st.error("No models could be loaded! Please check the model files.")
             return
-        
-        # Create progress bars
-        st.write("### Processing Video")
-        progress_extract = st.progress(0)
-        status_extract = st.empty()
-        progress_faces = st.progress(0)
-        status_faces = st.empty()
-        progress_process = st.progress(0)
-        status_process = st.empty()
         
         def update_progress(progress_bar, status_placeholder, stage):
             def callback(progress):
@@ -290,6 +351,8 @@ def process_video_input(video_file):
         )
         
         # Clear progress bars and status messages
+        progress_load.empty()
+        status_load.empty()
         progress_extract.empty()
         status_extract.empty()
         progress_faces.empty()
@@ -311,7 +374,7 @@ def process_video_input(video_file):
                         st.markdown(f"""
                         <div style='padding: 15px; border-radius: 10px; border: 1px solid #ddd; margin: 5px 0;'>
                             <h4>{result['model_type'].upper()}</h4>
-                            <p>Overall Prediction: <strong>{result['prediction']}</strong><br>
+                            <p>Overall Prediction: {format_prediction(result['prediction'])}<br>
                             Average Confidence: {format_confidence(result['confidence'])}<br>
                             Fake Frames: {result['fake_frame_ratio']:.1%}</p>
                         </div>
@@ -324,12 +387,15 @@ def process_video_input(video_file):
                 n_sample_faces = min(12, len(faces))  # Show up to 12 faces
                 sample_indices = np.linspace(0, len(faces)-1, n_sample_faces, dtype=int)
                 
-                # Create grid layout for faces
+                # Create grid layout for faces in video processing
                 cols = st.columns(4)  # 4 faces per row
                 for idx, face_idx in enumerate(sample_indices):
                     with cols[idx % 4]:
                         face = faces[face_idx]
-                        st.image(face, caption=f"Frame {face_idx}", use_container_width=True)
+                        resized_face = resize_image_for_display(face, max_size=200)
+                        st.markdown('<div class="face-grid-image">', unsafe_allow_html=True)
+                        st.image(resized_face, caption=f"Frame {face_idx}", use_container_width=False)
+                        st.markdown('</div>', unsafe_allow_html=True)
         else:
             st.warning("No faces could be detected in the video frames.")
         
@@ -358,12 +424,12 @@ def process_image_input(uploaded_file):
         with col1:
             # Display original image with face detection
             st.write("### Original Image with Face Detection")
-            st.image(viz_image, use_container_width=True)
+            st.image(viz_image, use_container_width=False)
             
             # Display extracted face
             st.write("### Extracted Face")
             display_face = resize_image_for_display(face_image)
-            st.image(display_face, use_container_width=True)
+            st.image(display_face, use_container_width=False)
             st.write(f"Face size: {face_image.size[0]}x{face_image.size[1]}")
         
         with col2:
@@ -432,7 +498,7 @@ def process_image_input(uploaded_file):
                                 st.markdown(f"""
                                 <div style='padding: 15px; border-radius: 10px; border: 1px solid #ddd; margin: 5px 0;'>
                                     <h4>{model_type.upper()}</h4>
-                                    <p>Prediction: <strong>{prediction}</strong><br>
+                                    <p>Prediction: {format_prediction(prediction)}<br>
                                     Confidence: {format_confidence(confidence)}</p>
                                 </div>
                                 """, unsafe_allow_html=True)
@@ -464,15 +530,41 @@ def process_image_input(uploaded_file):
                         
                         # Add model-specific descriptions
                         if model_data['model_type'].lower() == 'xception':
-                            st.write("""
-                            The Xception architecture processes features through three flows:
-                            Entry Flow → Middle Flow → Exit Flow
-                            """)
+                            st.markdown("""
+                            <div style='background-color: #1e1e1e; padding: 15px; border-radius: 10px; border: 1px solid #333;'>
+                                <h4 style='color: #00bfff; margin-bottom: 10px;'>🔍 Xception Architecture Analysis</h4>
+                                <p style='color: #e0e0e0; margin-bottom: 5px;'>The model processes features through three main flows:</p>
+                                <ol style='color: #e0e0e0;'>
+                                    <li><strong style='color: #00ffff;'>Entry Flow:</strong> Captures basic visual elements like edges, textures, and colors</li>
+                                    <li><strong style='color: #00ffff;'>Middle Flow:</strong> Processes intermediate features and patterns</li>
+                                    <li><strong style='color: #00ffff;'>Exit Flow:</strong> Combines complex features for final classification</li>
+                                </ol>
+                            </div>
+                            """, unsafe_allow_html=True)
                         else:  # EfficientNet
-                            st.write("""
-                            The EfficientNet architecture processes features through multiple stages:
-                            Initial → Stage 1-2 → Stage 3-4 → Stage 5-6 → Final
-                            """)
+                            st.markdown("""
+                            <div style='background-color: #1e1e1e; padding: 15px; border-radius: 10px; border: 1px solid #333;'>
+                                <h4 style='color: #00bfff; margin-bottom: 10px;'>🔍 EfficientNet Architecture Analysis</h4>
+                                <p style='color: #e0e0e0; margin-bottom: 5px;'>The model processes features through progressive stages:</p>
+                                <ol style='color: #e0e0e0;'>
+                                    <li><strong style='color: #00ffff;'>Initial Stage:</strong> Basic feature extraction (edges, colors)</li>
+                                    <li><strong style='color: #00ffff;'>Early Stages (1-2):</strong> Simple pattern recognition</li>
+                                    <li><strong style='color: #00ffff;'>Middle Stages (3-4):</strong> Complex pattern processing</li>
+                                    <li><strong style='color: #00ffff;'>Late Stages (5-6):</strong> High-level feature composition</li>
+                                    <li><strong style='color: #00ffff;'>Final Stage:</strong> Feature refinement for classification</li>
+                                </ol>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        
+                        st.markdown("""
+                        <div style='background-color: #1e1e1e; padding: 15px; border-radius: 10px; border: 1px solid #333; margin-top: 20px;'>
+                            <h4 style='color: #00bfff; margin-bottom: 10px;'>🎯 Model's Internal Feature Representations</h4>
+                            <p style='color: #e0e0e0;'>
+                                Below are the visualizations of how the model "sees" and processes the image at different stages. 
+                                Brighter areas indicate stronger feature activation, showing what the model considers important for detection.
+                            </p>
+                        </div>
+                        """, unsafe_allow_html=True)
                         
                         # Get feature maps
                         visualizations = get_feature_maps(
