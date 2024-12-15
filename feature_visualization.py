@@ -23,79 +23,133 @@ class FeatureExtractor:
     def _register_hooks(self):
         try:
             if self.model_type == "xception":
-                # Register more hooks for Xception
-                layers = ['conv1', 'conv2', 'conv3', 'conv4', 'block1', 'block2', 'block3', 
-                         'block4', 'block5', 'block6', 'block7', 'block8', 'block9', 'block10', 
-                         'block11', 'block12']
-                for layer_name in layers:
-                    if hasattr(self.model.backbone, layer_name):
-                        layer = getattr(self.model.backbone, layer_name)
-                        if layer_name.startswith('block'):
-                            self.hooks.append(layer.rep.register_forward_hook(
-                                lambda m, i, o, name=layer_name: self._hook_fn(f'{name}_rep', o)
-                            ))
-                        else:
-                            self.hooks.append(layer.register_forward_hook(
-                                lambda m, i, o, name=layer_name: self._hook_fn(name, o)
-                            ))
+                # Entry Flow
+                # Stem
+                if hasattr(self.model.backbone, 'conv1'):
+                    self.hooks.append(
+                        self.model.backbone.conv1.register_forward_hook(
+                            lambda m, i, o: self._hook_fn('entry_stem_conv1', o)
+                        )
+                    )
+                
+                # Entry flow blocks
+                entry_blocks = ['block1', 'block2', 'block3']
+                for block_name in entry_blocks:
+                    if hasattr(self.model.backbone, block_name):
+                        block = getattr(self.model.backbone, block_name)
+                        # Hook for separable convolutions
+                        self.hooks.append(
+                            block.rep.register_forward_hook(
+                                lambda m, i, o, name=block_name: self._hook_fn(f'entry_{name}_sepconv', o)
+                            )
+                        )
+                        # Hook for residual connection if exists
+                        if hasattr(block, 'skip'):
+                            self.hooks.append(
+                                block.skip.register_forward_hook(
+                                    lambda m, i, o, name=block_name: self._hook_fn(f'entry_{name}_residual', o)
+                                )
+                            )
+                
+                # Middle Flow (8 identical blocks)
+                middle_blocks = [f'block{i}' for i in range(4, 12)]  # Changed to capture all 8 blocks
+                for block_name in middle_blocks:
+                    if hasattr(self.model.backbone, block_name):
+                        block = getattr(self.model.backbone, block_name)
+                        self.hooks.append(
+                            block.rep.register_forward_hook(
+                                lambda m, i, o, name=block_name: self._hook_fn(f'middle_{name}_sepconv', o)
+                            )
+                        )
+                
+                # Exit Flow
+                exit_blocks = ['block12', 'block13']  # Last two blocks
+                for block_name in exit_blocks:
+                    if hasattr(self.model.backbone, block_name):
+                        block = getattr(self.model.backbone, block_name)
+                        # Hook for separable convolutions
+                        self.hooks.append(
+                            block.rep.register_forward_hook(
+                                lambda m, i, o, name=block_name: self._hook_fn(f'exit_{name}_sepconv', o)
+                            )
+                        )
+                        # Hook for final convolutions
+                        if hasattr(block, 'conv3'):
+                            self.hooks.append(
+                                block.conv3.register_forward_hook(
+                                    lambda m, i, o, name=block_name: self._hook_fn(f'exit_{name}_conv3', o)
+                                )
+                            )
                 
             elif self.model_type == "efficientnet":
-                # Register hooks for more EfficientNet blocks
-                for i, block in enumerate(self.model.backbone._blocks):
-                    if i % 3 == 0:  # Sample every third block to avoid too many visualizations
-                        self.hooks.append(block.register_forward_hook(
-                            lambda m, i, o, idx=i: self._hook_fn(f'block_{idx}', o)
-                        ))
+                # Initial conv layer
+                if hasattr(self.model.backbone, '_conv_stem'):
+                    self.hooks.append(
+                        self.model.backbone._conv_stem.register_forward_hook(
+                            lambda m, i, o: self._hook_fn('initial_conv_stem', o)
+                        )
+                    )
                 
-            elif self.model_type == "swin":
-                # Register hooks for all Swin layers
-                for i, layer in enumerate(self.model.backbone.layers):
-                    self.hooks.append(layer.register_forward_hook(
-                        lambda m, i, o, idx=i: self._hook_fn(f'swin_layer_{idx}', o)
-                    ))
-                    if hasattr(layer, 'blocks'):
-                        for j, block in enumerate(layer.blocks):
-                            self.hooks.append(block.register_forward_hook(
-                                lambda m, i, o, idx1=i, idx2=j: self._hook_fn(f'swin_block_{idx1}_{idx2}', o)
-                            ))
+                # MBConv blocks
+                if hasattr(self.model.backbone, '_blocks'):
+                    current_stage = 0
+                    prev_channels = None
+                    
+                    for idx, block in enumerate(self.model.backbone._blocks):
+                        # Detect stage changes based on channel changes or expansion ratio changes
+                        current_channels = block._project_conv.out_channels
+                        if prev_channels != current_channels:
+                            current_stage += 1
+                            prev_channels = current_channels
+                        
+                        # Register hooks for key components of MBConv block
+                        # Expansion conv
+                        if hasattr(block, '_expand_conv'):
+                            self.hooks.append(
+                                block._expand_conv.register_forward_hook(
+                                    lambda m, i, o, s=current_stage, idx=idx: 
+                                    self._hook_fn(f'stage{s}_block{idx}_expand', o)
+                                )
+                            )
+                        
+                        # Depthwise conv
+                        if hasattr(block, '_depthwise_conv'):
+                            self.hooks.append(
+                                block._depthwise_conv.register_forward_hook(
+                                    lambda m, i, o, s=current_stage, idx=idx: 
+                                    self._hook_fn(f'stage{s}_block{idx}_depthwise', o)
+                                )
+                            )
+                        
+                        # SE block if exists
+                        if hasattr(block, '_se_reduce'):
+                            self.hooks.append(
+                                block._se_reduce.register_forward_hook(
+                                    lambda m, i, o, s=current_stage, idx=idx: 
+                                    self._hook_fn(f'stage{s}_block{idx}_se', o)
+                                )
+                            )
+                        
+                        # Project conv
+                        if hasattr(block, '_project_conv'):
+                            self.hooks.append(
+                                block._project_conv.register_forward_hook(
+                                    lambda m, i, o, s=current_stage, idx=idx: 
+                                    self._hook_fn(f'stage{s}_block{idx}_project', o)
+                                )
+                            )
                 
-            elif self.model_type == "cross_attention":
-                # Register hooks for more attention layers
-                self.hooks.append(self.model.backbone.register_forward_hook(
-                    lambda m, i, o: self._hook_fn('backbone_features', o)
-                ))
-                self.hooks.append(self.model.cross_attention1.register_forward_hook(
-                    lambda m, i, o: self._hook_fn('cross_attn1', o)
-                ))
-                self.hooks.append(self.model.cross_attention2.register_forward_hook(
-                    lambda m, i, o: self._hook_fn('cross_attn2', o)
-                ))
+                # Final conv layer
+                if hasattr(self.model.backbone, '_conv_head'):
+                    self.hooks.append(
+                        self.model.backbone._conv_head.register_forward_hook(
+                            lambda m, i, o: self._hook_fn('final_conv_head', o)
+                        )
+                    )
+            
+            else:
+                logger.info(f"Feature extraction not supported for model type: {self.model_type}")
                 
-            elif self.model_type == "two_stream":
-                # Register hooks for both streams
-                self.hooks.append(self.model.rgb_stream.register_forward_hook(
-                    lambda m, i, o: self._hook_fn('rgb_stream', o)
-                ))
-                self.hooks.append(self.model.freq_stream.register_forward_hook(
-                    lambda m, i, o: self._hook_fn('freq_stream', o)
-                ))
-                if hasattr(self.model, 'fusion'):
-                    self.hooks.append(self.model.fusion.register_forward_hook(
-                        lambda m, i, o: self._hook_fn('fusion', o)
-                    ))
-                
-            elif self.model_type == "cnn_transformer":
-                # Register hooks for CNN and transformer layers
-                self.hooks.append(self.model.backbone.register_forward_hook(
-                    lambda m, i, o: self._hook_fn('cnn_features', o)
-                ))
-                for i, layer in enumerate(self.model.transformer_layers):
-                    self.hooks.append(layer.register_forward_hook(
-                        lambda m, i, o, idx=i: self._hook_fn(f'transformer_layer_{idx}', o)
-                    ))
-                    self.hooks.append(layer.attn.register_forward_hook(
-                        lambda m, i, o, idx=i: self._hook_fn(f'attention_layer_{idx}', o)
-                    ))
         except Exception as e:
             logger.error(f"Error registering hooks for {self.model_type}: {str(e)}")
             raise
@@ -117,7 +171,8 @@ class FeatureVisualizer:
         if len(feature_map.shape) == 4:
             feature_map = feature_map.squeeze(0)
         if len(feature_map.shape) == 3:
-            feature_map = feature_map.mean(0)
+            # Use max activation across channels for better visualization
+            feature_map = feature_map.max(0)[0]
         
         feature_map = feature_map.cpu().numpy()
         feature_map = (feature_map - feature_map.min()) / (feature_map.max() - feature_map.min() + 1e-8)
@@ -128,13 +183,13 @@ class FeatureVisualizer:
         # Resize feature map
         feature_map_resized = cv2.resize(feature_map, size)
         
-        # Apply colormap
-        heatmap = cv2.applyColorMap(np.uint8(255 * feature_map_resized), cv2.COLORMAP_JET)
+        # Apply colormap (using COLORMAP_INFERNO for better visibility)
+        heatmap = cv2.applyColorMap(np.uint8(255 * feature_map_resized), cv2.COLORMAP_INFERNO)
         heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
         return heatmap
     
     @staticmethod
-    def overlay_heatmap(image, heatmap, alpha=0.4):
+    def overlay_heatmap(image, heatmap, alpha=0.7):
         # Convert PIL Image to numpy array if necessary
         if isinstance(image, Image.Image):
             image = np.array(image)
@@ -142,27 +197,9 @@ class FeatureVisualizer:
         # Resize image to match heatmap
         image = cv2.resize(image, (heatmap.shape[1], heatmap.shape[0]))
         
-        # Overlay
-        overlayed = cv2.addWeighted(image, 1 - alpha, heatmap, alpha, 0)
-        return overlayed
-    
-    @staticmethod
-    def visualize_attention(attention_map, size=(224, 224)):
-        # Process attention map
-        if torch.is_tensor(attention_map):
-            attention_map = attention_map.cpu().numpy()
-        
-        if len(attention_map.shape) > 2:
-            attention_map = attention_map.mean(axis=tuple(range(len(attention_map.shape)-2)))
-        
-        # Normalize and resize
-        attention_map = (attention_map - attention_map.min()) / (attention_map.max() - attention_map.min() + 1e-8)
-        attention_map = cv2.resize(attention_map, size)
-        
-        # Create heatmap
-        heatmap = cv2.applyColorMap(np.uint8(255 * attention_map), cv2.COLORMAP_JET)
-        heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
-        return heatmap
+        # Create overlay
+        overlay = cv2.addWeighted(image, 1 - alpha, heatmap, alpha, 0)
+        return overlay
 
 def get_feature_maps(model, model_type, image_tensor):
     """Extract and visualize feature maps for a given model and image"""
@@ -225,55 +262,58 @@ def get_feature_maps(model, model_type, image_tensor):
     return visualizations
 
 def display_feature_maps(image, visualizations):
-    """Display feature maps in an organized layout"""
-    st.write("### Model Feature Visualizations")
+    """Display feature maps in a simple grid layout with overlay control"""
+    if not visualizations:
+        st.warning("No feature maps available to display.")
+        return
     
-    # Create tabs for different visualization types
-    tab1, tab2 = st.tabs(["Grid View", "Detailed View"])
+    # Convert image to numpy array if needed
+    if isinstance(image, Image.Image):
+        image = np.array(image)
     
-    with tab1:
-        # Grid view with more columns
-        num_cols = 4  # Increased from 2 to 4
-        num_rows = (len(visualizations) + num_cols - 1) // num_cols
-        
-        # Display original image in its own row
-        st.image(image, caption="Original Image", use_container_width=True)
-        
-        # Display feature maps in grid
-        for i in range(0, len(visualizations), num_cols):
-            cols = st.columns(num_cols)
-            for j in range(num_cols):
-                idx = i + j
-                if idx < len(visualizations):
-                    title, heatmap = list(visualizations.items())[idx]
-                    with cols[j]:
-                        st.image(heatmap, caption=title, use_container_width=True)
+    # Create a more organized layout
+    st.write("### Model's Internal Feature Representations")
     
-    with tab2:
-        # Detailed view with larger images and explanations
-        st.image(image, caption="Original Image", use_container_width=True)
-        
-        for title, heatmap in visualizations.items():
-            st.write(f"#### {title}")
-            col1, col2 = st.columns([2, 1])
-            
-            with col1:
-                st.image(heatmap, use_container_width=True)
-            
-            with col2:
-                # Add explanations based on layer type
-                if "conv" in title.lower():
-                    st.write("Convolutional layer feature map showing detected patterns and edges.")
-                elif "attention" in title.lower():
-                    st.write("Attention map highlighting regions the model focuses on for decision making.")
-                elif "block" in title.lower():
-                    st.write("Intermediate block features showing hierarchical pattern recognition.")
-                elif "stream" in title.lower():
-                    st.write("Stream-specific features from the two-stream architecture.")
-                elif "transformer" in title.lower():
-                    st.write("Transformer layer representations showing global context understanding.")
+    # Display options
+    overlay_alpha = st.slider("Overlay Intensity", 0.0, 1.0, 0.7, 0.1)
+    
+    # Calculate grid dimensions
+    n_maps = len(visualizations)
+    n_cols = 4  # Show 4 columns
+    n_rows = (n_maps + n_cols - 1) // n_cols
+    
+    # Create grid layout
+    for i in range(0, n_maps, n_cols):
+        cols = st.columns(n_cols)
+        for j in range(n_cols):
+            idx = i + j
+            if idx < n_maps:
+                name = list(visualizations.keys())[idx]
+                heatmap = list(visualizations.values())[idx]
                 
-                # Add overlay option
-                if st.button(f"Show Overlay for {title}"):
-                    overlay = FeatureVisualizer.overlay_heatmap(image, heatmap)
-                    st.image(overlay, caption="Overlay with original image", use_container_width=True)
+                # Create overlay
+                overlay = FeatureVisualizer.overlay_heatmap(image, heatmap, overlay_alpha)
+                
+                # Display in grid
+                with cols[j]:
+                    st.image(overlay, caption=name.replace('_', ' ').title())
+
+def get_feature_description(feature_name):
+    """Get description for different types of features"""
+    descriptions = {
+        'entry_stem': "Initial feature extraction that captures basic visual elements like edges and textures.",
+        'entry_block': "Early processing that starts to combine basic features into more complex patterns.",
+        'middle_block': "Deep feature processing that identifies higher-level patterns and structures.",
+        'exit_block': "Final feature refinement that combines complex patterns for classification.",
+        'stage': "Progressive feature transformation in the network.",
+        'expand': "Channel expansion to increase feature representation capacity.",
+        'depthwise': "Spatial feature processing that captures local patterns.",
+        'se': "Channel attention that highlights important feature channels.",
+        'project': "Feature dimension reduction and refinement.",
+        'conv_head': "Final feature processing before classification."
+    }
+    
+    for key, desc in descriptions.items():
+        if key in feature_name.lower():
+            return desc
+    return ""  # Return empty string instead of default text

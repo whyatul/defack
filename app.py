@@ -200,14 +200,6 @@ def main():
     st.title("🔍 Deepfake Detection System")
     st.write("Upload an image to check if it's real or fake using multiple deep learning models.")
     
-    # Sidebar information
-    with st.sidebar:
-        st.write("### System Information")
-        st.write(f"Device: CPU (GPU not available)")
-        st.write("### Model Information")
-        for model_type, size in MODEL_IMAGE_SIZES.items():
-            st.write(f"- {model_type.upper()}: {size}x{size}")
-    
     # File uploader
     uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
     
@@ -316,23 +308,85 @@ def main():
                 
                 with viz_tab:
                     if predictions_data:
-                        # Add model selector
-                        selected_model = st.selectbox(
-                            "Select Model for Visualization",
-                            options=[p['model_type'].upper() for p in predictions_data],
-                            format_func=lambda x: f"{x} Model"
-                        )
+                        # Filter for CNN models only
+                        cnn_predictions = [p for p in predictions_data 
+                                        if p['model_type'].lower() in ['xception', 'efficientnet']]
                         
-                        # Get selected model data
-                        model_data = next(p for p in predictions_data if p['model_type'].upper() == selected_model)
-                        
-                        # Get and display feature maps
-                        visualizations = get_feature_maps(
-                            model_data['model'],
-                            model_data['model_type'],
-                            model_data['processed_image']
-                        )
-                        display_feature_maps(face_image, visualizations)
+                        if cnn_predictions:
+                            # Add model selector for CNN models only
+                            selected_model = st.selectbox(
+                                "Select CNN Model for Feature Visualization",
+                                options=[p['model_type'].upper() for p in cnn_predictions],
+                                format_func=lambda x: f"{x} Model"
+                            )
+                            
+                            # Get selected model data
+                            model_data = next(p for p in cnn_predictions if p['model_type'].upper() == selected_model)
+                            
+                            st.write("### Feature Map Visualization")
+                            
+                            # Add model-specific descriptions
+                            if model_data['model_type'].lower() == 'xception':
+                                st.write("""
+                                The Xception architecture processes features through three flows:
+                                Entry Flow → Middle Flow → Exit Flow
+                                """)
+                            else:  # EfficientNet
+                                st.write("""
+                                The EfficientNet architecture processes features through multiple stages:
+                                Initial → Stage 1-2 → Stage 3-4 → Stage 5-6 → Final
+                                """)
+                            
+                            # Get feature maps
+                            visualizations = get_feature_maps(
+                                model_data['model'],
+                                model_data['model_type'],
+                                model_data['processed_image']
+                            )
+                            
+                            if visualizations:
+                                # Sort visualizations by architectural order
+                                if model_data['model_type'].lower() == 'xception':
+                                    # Sort by flow order
+                                    sorted_maps = {}
+                                    for k, v in visualizations.items():
+                                        if 'entry_' in k:
+                                            sorted_maps[k.replace('entry_', '1_')] = v
+                                        elif 'middle_' in k:
+                                            sorted_maps[k.replace('middle_', '2_')] = v
+                                        elif 'exit_' in k:
+                                            sorted_maps[k.replace('exit_', '3_')] = v
+                                    
+                                    # Display all maps in order
+                                    display_feature_maps(face_image, dict(sorted(sorted_maps.items())))
+                                
+                                else:  # EfficientNet
+                                    # Sort by stage order
+                                    sorted_maps = {}
+                                    stage_order = {
+                                        'initial': '1',
+                                        'stage1': '2',
+                                        'stage2': '3',
+                                        'stage3': '4',
+                                        'stage4': '5',
+                                        'stage5': '6',
+                                        'stage6': '7',
+                                        'final': '8',
+                                        'conv_head': '9'
+                                    }
+                                    
+                                    for k, v in visualizations.items():
+                                        for stage, order in stage_order.items():
+                                            if stage in k:
+                                                sorted_maps[f"{order}_{k}"] = v
+                                                break
+                                    
+                                    # Display all maps in order
+                                    display_feature_maps(face_image, dict(sorted(sorted_maps.items())))
+                            else:
+                                st.info("No feature maps available for this model.")
+                        else:
+                            st.info("Please select a CNN model (Xception or EfficientNet) for feature visualization.")
                     else:
                         st.warning("No models available for visualization.")
                 
