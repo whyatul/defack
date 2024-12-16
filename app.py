@@ -104,6 +104,40 @@ MODEL_IMAGE_SIZES = {
     "cnn_transformer": 224
 }
 
+@st.cache_resource
+def get_cached_model(model_path, model_type):
+    """Cache and share model instances across sessions"""
+    try:
+        # Initialize model based on type
+        model = None
+        if model_type == "xception":
+            from train_xception import DeepfakeXception
+            model = DeepfakeXception()
+        elif model_type == "efficientnet":
+            from train_efficientnet import DeepfakeEfficientNet
+            model = DeepfakeEfficientNet()
+        elif model_type == "swin":
+            from train_swin import DeepfakeSwin
+            model = DeepfakeSwin()
+        elif model_type == "cross_attention":
+            from train_cross_attention import DeepfakeCrossAttention
+            model = DeepfakeCrossAttention()
+        elif model_type == "cnn_transformer":
+            from train_cnn_transformer import DeepfakeCNNTransformer
+            model = DeepfakeCNNTransformer()
+            
+        if model is None:
+            return None
+            
+        # Load state dict
+        state_dict = torch.load(model_path, map_location='cpu', weights_only=True)
+        model.load_state_dict(state_dict, strict=False)
+        model.eval()
+        
+        return model
+    except Exception as e:
+        return None
+
 def extract_face(image, padding=0.1):
     """Extract face from image using MediaPipe with padding"""
     # Convert PIL Image to cv2 format
@@ -195,50 +229,8 @@ def process_image(image, model_type):
         return None
 
 def load_model(model_path, model_type):
-    """Load a model from converted state dict"""
-    try:
-        # Initialize model based on type
-        model = None
-        try:
-            if model_type == "xception":
-                from train_xception import DeepfakeXception
-                model = DeepfakeXception()
-            elif model_type == "efficientnet":
-                from train_efficientnet import DeepfakeEfficientNet
-                model = DeepfakeEfficientNet()
-            elif model_type == "swin":
-                from train_swin import DeepfakeSwin
-                model = DeepfakeSwin()
-            elif model_type == "cross_attention":
-                from train_cross_attention import DeepfakeCrossAttention
-                model = DeepfakeCrossAttention()
-            elif model_type == "cnn_transformer":
-                from train_cnn_transformer import DeepfakeCNNTransformer
-                model = DeepfakeCNNTransformer()
-        except Exception as e:
-            logger.error(f"Error initializing model: {str(e)}")
-            return None
-        
-        if model is None:
-            logger.warning(f"Could not initialize model of type {model_type}")
-            return None
-        
-        # Load state dict with weights_only=True to avoid pickle security warning
-        try:
-            state_dict = torch.load(model_path, map_location='cpu', weights_only=True)
-            model.load_state_dict(state_dict, strict=False)
-            logger.info(f"Successfully loaded state dict for {model_type}")
-        except Exception as e:
-            logger.error(f"Error loading state dict: {str(e)}")
-            return None
-            
-        model.eval()
-        logger.info(f"Successfully initialized {model_type} model")
-        
-        return model
-    except Exception as e:
-        logger.error(f"Error in load_model: {str(e)}")
-        return None
+    """Load a model using the cached function"""
+    return get_cached_model(model_path, model_type)
 
 def format_confidence(confidence):
     """Format confidence score with color based on value"""
