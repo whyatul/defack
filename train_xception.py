@@ -220,7 +220,7 @@ def main():
     DATA_DIR = '/kaggle/input/3body-filtered-v2-10k'  # Adjust as needed
     IMAGE_SIZE = 299  # Xception specific size
     BATCH_SIZE = 32
-    NUM_EPOCHS = 30 #Change in future for main run
+    NUM_EPOCHS = 15 #Change in future for main run
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # Get data
