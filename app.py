@@ -14,6 +14,20 @@ import numpy as np
 import cv2
 from feature_visualization import get_feature_maps, display_feature_maps
 from video_processor import VideoProcessor
+import subprocess
+import gc
+
+# Configure memory management
+torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.deterministic = True
+
+# Run setup script if models don't exist
+if not os.path.exists("converted_models"):
+    try:
+        subprocess.run(['bash', 'setup.sh'], check=True)
+    except subprocess.CalledProcessError as e:
+        st.error(f"Error running setup script: {str(e)}")
+        st.stop()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
