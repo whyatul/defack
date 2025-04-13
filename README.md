@@ -206,3 +206,17 @@ deepfake-detection-project-v4/
 - ⚠️ Models must be **converted** before use in the web app  
 - 🖼️ Feature visualization is limited to **CNN-based models**  
 - ⏳ Video processing speed depends on frame count  
+
+
+
+
+Go to kaggle.com and sign in
+Navigate to your account page (click on your profile picture → Account)
+Scroll down to the API section and click "Create New API Token"
+This will download a kaggle.json file
+Create the Kaggle directory and move the file:
+First, run the setup script:
+python /home/whyatul/Downloads/deepfake-detection-project-v4/setup_environment.py
+
+Apply the Streamlit/PyTorch patch:
+python /home/whyatul/Downloads/deepfake-detection-project-v4/fix_streamlit_torch.py
