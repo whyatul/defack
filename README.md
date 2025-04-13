@@ -210,13 +210,19 @@ deepfake-detection-project-v4/
 
 
 
-Go to kaggle.com and sign in
-Navigate to your account page (click on your profile picture → Account)
-Scroll down to the API section and click "Create New API Token"
-This will download a kaggle.json file
-Create the Kaggle directory and move the file:
-First, run the setup script:
-python /home/whyatul/Downloads/deepfake-detection-project-v4/setup_environment.py
+-Go to kaggle.com and sign in
+-Navigate to your account page (click on your profile picture → Account)
+-Scroll down to the API section and click "Create New API Token"
+-This will download a kaggle.json file
+-Create the Kaggle directory and move the file:
+-First, run the setup script:
+  ```bash
+   python /home/whyatul/Downloads/deepfake-detection-project-v4/setup_environment.py
+   ```  
+
 
 Apply the Streamlit/PyTorch patch:
-python /home/whyatul/Downloads/deepfake-detection-project-v4/fix_streamlit_torch.py
+  ```bash
+python /home/whyatul/Downloads/deepfake-detection-project-v4/fix_streamlit_torch.py  
+   ```  
+
